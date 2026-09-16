@@ -4,13 +4,18 @@ import streamlit as st
 import pandas as pd
 from sklearn.preprocessing import StandardScaler
 from sklearn.cluster import KMeans
+from sklearn.metrics import silhouette_score
 import plotly.express as px
+import plotly.graph_objects as go
 
 st.set_page_config(page_title="영화 유형 나누기", page_icon="🎬", layout="wide")
 
 st.title("🎬 영화 유형 나누기")
 
 DATA_URL = "https://raw.githubusercontent.com/greatsong/modudata/main/data/kobis_movies.csv"
+
+# 묶음 수에 따라 붙일 기호 (최대 7개)
+CLUSTER_SYMBOLS = ["㉮", "㉯", "㉰", "㉱", "㉲", "㉳", "㉴"]
 
 
 @st.cache_data
@@ -57,18 +62,24 @@ if len(selected_labels) < 2:
 
 selected_cols = [FEATURE_OPTIONS[label] for label in selected_labels]
 
+# ---------- 묶음 수 선택 ----------
+st.subheader("묶음 수 선택")
+n_clusters = st.slider("묶음 수를 골라 주세요.", min_value=2, max_value=7, value=3)
+
+cluster_symbols = CLUSTER_SYMBOLS[:n_clusters]
+
 # ---------- 표준화 + k-평균 ----------
 X = df[selected_cols].values
 X_scaled = StandardScaler().fit_transform(X)
 
-kmeans = KMeans(n_clusters=3, random_state=42, n_init=10)
+kmeans = KMeans(n_clusters=n_clusters, random_state=42, n_init=10)
 df["cluster_raw"] = kmeans.fit_predict(X_scaled)
 
-# 누적 관객 평균이 큰 묶음부터 ㉮, ㉯, ㉰
+# 누적 관객 평균이 큰 묶음부터 순서대로 기호 부여
 order = df.groupby("cluster_raw")["total_audi"].mean().sort_values(ascending=False).index.tolist()
-name_map = {cid: name for cid, name in zip(order, ["㉮", "㉯", "㉰"])}
+name_map = {cid: name for cid, name in zip(order, cluster_symbols)}
 df["cluster"] = df["cluster_raw"].map(name_map)
-cluster_order = ["㉮", "㉯", "㉰"]
+cluster_order = cluster_symbols
 
 # ---------- 2차원 산점도 ----------
 st.subheader("2차원 산점도")
@@ -144,3 +155,34 @@ st.subheader("묶음별 누적 관객 상위 5편")
 for c in cluster_order:
     top5 = df[df["cluster"] == c].sort_values("total_audi", ascending=False).head(5)
     st.write(f"**{c}**: " + ", ".join(top5["movieNm"].tolist()))
+
+# ---------- 묶음 수에 따른 변화 (엘보우) ----------
+st.subheader("묶음 수에 따른 변화")
+
+k_range = list(range(1, 8))
+inertias = []
+for k in k_range:
+    km_k = KMeans(n_clusters=k, random_state=42, n_init=10)
+    km_k.fit(X_scaled)
+    inertias.append(km_k.inertia_)
+
+fig_elbow = go.Figure()
+fig_elbow.add_trace(
+    go.Scatter(x=k_range, y=inertias, mode="lines+markers", name="묶음 내 거리 제곱합")
+)
+fig_elbow.add_vline(x=n_clusters, line_dash="dash", line_color="red")
+fig_elbow.update_layout(
+    xaxis_title="묶음 수",
+    yaxis_title="묶음 내 거리 제곱합",
+    xaxis=dict(dtick=1),
+)
+st.plotly_chart(fig_elbow, use_container_width=True)
+
+elbow_table = pd.DataFrame({"묶음 수": k_range, "거리 제곱합": inertias})
+elbow_table["직전 대비 감소량"] = (-elbow_table["거리 제곱합"].diff()).round(3)
+elbow_table.loc[elbow_table.index[0], "직전 대비 감소량"] = pd.NA
+st.dataframe(elbow_table.set_index("묶음 수"))
+
+# ---------- 실루엣 점수 ----------
+sil_score = silhouette_score(X_scaled, df["cluster_raw"])
+st.write(f"**묶음 수 {n_clusters}개의 실루엣 점수: {sil_score:.3f}** (-1~1, 1에 가까울수록 묶음이 뚜렷함)")
